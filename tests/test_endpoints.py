@@ -29,14 +29,14 @@ class TestAppEndpoints(unittest.TestCase):
         self.assertTrue(len(data["labels"]) > 0)
 
     def test_02_prediction_count(self):
-        response = client.get("/prediction/count")
+        response = client.get("/predictions/count")
         self.assertEqual(response.status_code, 200)
         self.assertIn("count", response.json())
 
     def test_03_get_prediction_by_uid(self):
-        response = client.get(f"/prediction/{self.uid}")
+        response = client.get(f"/prediction/{self.__class__.uid}")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["uid"], self.uid)
+        self.assertEqual(response.json()["uid"], self.__class__.uid)
 
     def test_04_get_labels(self):
         response = client.get("/labels")
@@ -51,13 +51,10 @@ class TestAppEndpoints(unittest.TestCase):
         self.assertIn("average_confidence_score", data)
 
     def test_06_delete_prediction(self):
-        response = client.delete(f"/prediction/{self.uid}")
+        response = client.delete(f"/prediction/{self.__class__.uid}")
         self.assertEqual(response.status_code, 200)
         self.assertIn("deleted successfully", response.json()["message"])
 
         # Confirm it was removed
-        check = client.get(f"/prediction/{self.uid}")
+        check = client.get(f"/prediction/{self.__class__.uid}")
         self.assertEqual(check.status_code, 404)
-
-if __name__ == "__main__":
-    unittest.main()
