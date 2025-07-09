@@ -150,7 +150,7 @@ def get_prediction_by_uid(uid: str):
             ]
         }
 
-@app.get("/prediction/count")
+@app.get("/predictions/count")
 def get_prediction_count_last_week():
     """
     Get total number of predictions made in the last 7 days
