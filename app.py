@@ -1,4 +1,5 @@
 import time
+from collections import Counter
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from ultralytics import YOLO
@@ -230,6 +231,76 @@ def get_prediction_image(uid: str, request: Request):
     else:
         # If the client doesn't accept image, respond with 406 Not Acceptable
         raise HTTPException(status_code=406, detail="Client does not accept an image format")
+
+@app.get("/labels")
+def get_labels_last_week():
+    one_week_ago = datetime.now() - timedelta(days=7)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT DISTINCT do.label
+            FROM detection_objects do
+            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
+            WHERE ps.timestamp >= ?
+        """, (one_week_ago.isoformat(),)).fetchall()
+        return [row["label"] for row in rows]
+
+@app.delete("/prediction/{uid}")
+def delete_prediction(uid: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
+        if not session:
+            raise HTTPException(status_code=404, detail="Prediction not found")
+
+        # Delete images
+        for path in [session["original_image"], session["predicted_image"]]:
+            if os.path.exists(path):
+                os.remove(path)
+
+        # Delete DB entries
+        conn.execute("DELETE FROM detection_objects WHERE prediction_uid = ?", (uid,))
+        conn.execute("DELETE FROM prediction_sessions WHERE uid = ?", (uid,))
+
+    return {"message": f"Prediction {uid} deleted successfully"}
+
+@app.get("/stats")
+def get_prediction_stats():
+    one_week_ago = datetime.now() - timedelta(days=7)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Total predictions in the last week
+        total_predictions = conn.execute("""
+            SELECT COUNT(*) as count
+            FROM prediction_sessions
+            WHERE timestamp >= ?
+        """, (one_week_ago.isoformat(),)).fetchone()["count"]
+
+        # Confidence scores
+        scores = conn.execute("""
+            SELECT do.score
+            FROM detection_objects do
+            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
+            WHERE ps.timestamp >= ?
+        """, (one_week_ago.isoformat(),)).fetchall()
+        score_values = [row["score"] for row in scores]
+        avg_score = round(sum(score_values) / len(score_values), 4) if score_values else 0.0
+
+        # Most common labels
+        labels = conn.execute("""
+            SELECT do.label
+            FROM detection_objects do
+            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
+            WHERE ps.timestamp >= ?
+        """, (one_week_ago.isoformat(),)).fetchall()
+        label_counts = Counter(row["label"] for row in labels)
+
+    return {
+        "total_predictions": total_predictions,
+        "average_confidence_score": avg_score,
+        "most_common_labels": dict(label_counts.most_common())
+    }
 
 @app.get("/health")
 def health():
