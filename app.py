@@ -7,6 +7,7 @@ import sqlite3
 import os
 import uuid
 import shutil
+from datetime import datetime, timedelta
 
 # Disable GPU usage
 import torch
@@ -148,6 +149,20 @@ def get_prediction_by_uid(uid: str):
                 } for obj in objects
             ]
         }
+
+@app.get("/prediction/count")
+def get_prediction_count_last_week():
+    """
+    Get total number of predictions made in the last 7 days
+    """
+    one_week_ago = datetime.now() - timedelta(days=7)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT COUNT(*) as count FROM prediction_sessions WHERE timestamp >= ?", 
+            (one_week_ago.isoformat(),)
+        ).fetchone()
+        return {"count": row["count"]}
 
 @app.get("/predictions/label/{label}")
 def get_predictions_by_label(label: str):
