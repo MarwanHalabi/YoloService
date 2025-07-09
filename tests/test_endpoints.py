@@ -6,6 +6,7 @@ from app import app, DB_PATH, UPLOAD_DIR, PREDICTED_DIR, init_db
 
 client = TestClient(app)
 
+
 class TestAppEndpoints(unittest.TestCase):
 
     @classmethod
