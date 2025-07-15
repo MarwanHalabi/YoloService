@@ -1,0 +1,29 @@
+name: Deploy Service
+
+on:
+  push:
+    branches:
+     - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: HOST
+        username: ubuntu
+        key: SSH_KEY
+        script: |
+          cd /home/ubuntu/YOUR_YOLO_REPO_NAME || (git clone https://github.com/YOUR_USERNAME/YOUR_YOLO_REPO_NAME.git && cd YOUR_YOLO_REPO_NAME)
+          
+          # YOUR CODE HERE ... 
+          #  - get the updated code version from github
+          #  - install venv and dependencies if needed
+          #  - set up the Linux service
