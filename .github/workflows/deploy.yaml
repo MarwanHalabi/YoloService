@@ -21,7 +21,7 @@ jobs:
         username: ubuntu
         key: SSH_KEY
         script: |
-          cd /home/ubuntu/YOUR_YOLO_REPO_NAME || (git clone https://github.com/YOUR_USERNAME/YOUR_YOLO_REPO_NAME.git && cd YOUR_YOLO_REPO_NAME)
+          cd /home/ubuntu/YoloService || (git clone https://github.com/MarwanHalabi/YoloService.git && cd YoloService)
           
           # YOUR CODE HERE ... 
           #  - get the updated code version from github
