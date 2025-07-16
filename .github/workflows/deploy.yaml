@@ -35,6 +35,7 @@ jobs:
 
           # Install deps
           pip install -U pip
+          pip install -r torch-requirements.txt
           pip install -r requirements.txt
 
           # Restart service
