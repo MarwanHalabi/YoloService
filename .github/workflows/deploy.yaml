@@ -22,8 +22,23 @@ jobs:
         key: SSH_KEY
         script: |
           cd /home/ubuntu/YoloService || (git clone https://github.com/MarwanHalabi/YoloService.git && cd YoloService)
+          git pull origin main
           
-          # YOUR CODE HERE ... 
-          #  - get the updated code version from github
-          #  - install venv and dependencies if needed
-          #  - set up the Linux service
+          # Load pyenv
+          export PATH="$HOME/.pyenv/bin:$PATH"
+          eval "$(pyenv init --path)"
+          eval "$(pyenv init -)"
+          eval "$(pyenv virtualenv-init -)"
+
+          # Activate your env (replace with your actual env name if different)
+          pyenv activate venv3126
+
+          # Install deps
+          pip install -U pip
+          pip install -r requirements.txt
+
+          # Restart service
+          sudo systemctl daemon-reexec
+          sudo systemctl daemon-reload
+          sudo systemctl restart yolo.service
+          sudo systemctl status yolo.service --no-pager
