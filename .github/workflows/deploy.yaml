@@ -24,22 +24,22 @@ jobs:
           cd /home/ubuntu/YoloService || (git clone https://github.com/MarwanHalabi/YoloService.git && cd YoloService)
           git pull origin main
           
-          # Load pyenv
-          export PATH="$HOME/.pyenv/bin:$PATH"
-          eval "$(pyenv init --path)"
-          eval "$(pyenv init -)"
-          eval "$(pyenv virtualenv-init -)"
+          # Replace with your desired Python version
+          PYTHON_VERSION=3.12.6
+          VENV_NAME=venv3126
 
-          # Activate your env (replace with your actual env name if different)
-          pyenv activate venv3126
+          # Create virtualenv only if it doesn't exist
+          if ! pyenv virtualenvs --bare | grep -q "^$VENV_NAME$"; then
+            pyenv install -s "$PYTHON_VERSION"
+            pyenv virtualenv "$PYTHON_VERSION" "$VENV_NAME"
+          fi
+
+          # Activate it
+          pyenv activate "$VENV_NAME"
 
           # Install deps
-          pip install -U pip
           pip install -r torch-requirements.txt
           pip install -r requirements.txt
 
           # Restart service
-          sudo systemctl daemon-reexec
-          sudo systemctl daemon-reload
           sudo systemctl restart yolo.service
-          sudo systemctl status yolo.service --no-pager
