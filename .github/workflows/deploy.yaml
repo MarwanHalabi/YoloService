@@ -34,12 +34,8 @@ jobs:
           pyenv activate venv3126
 
           # Install deps
-          pip install -U pip
           pip install -r torch-requirements.txt
           pip install -r requirements.txt
 
           # Restart service
-          sudo systemctl daemon-reexec
-          sudo systemctl daemon-reload
           sudo systemctl restart yolo.service
-          sudo systemctl status yolo.service --no-pager
