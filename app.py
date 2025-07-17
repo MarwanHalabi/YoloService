@@ -307,7 +307,7 @@ def health():
     """
     Health check endpoint
     """
-    return {"status": "ok"}
+    return {"status": "ok good!"}
 
 if __name__ == "__main__":
     import uvicorn
