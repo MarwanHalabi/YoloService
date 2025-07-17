@@ -17,9 +17,9 @@ jobs:
     - name: Deploy to server
       uses: appleboy/ssh-action@v1.0.3
       with:
-        host: HOST
+        host: ${{ secrets.HOST }}
         username: ubuntu
-        key: SSH_KEY
+        key: ${{ secrets.SSH_KEY }}
         script: |
           cd /home/ubuntu/YoloService || (git clone https://github.com/MarwanHalabi/YoloService.git && cd YoloService)
           git pull origin main
