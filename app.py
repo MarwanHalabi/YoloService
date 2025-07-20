@@ -1,6 +1,5 @@
 import time
 from collections import Counter
-from typing import Optional
 from typing_extensions import Annotated
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -34,7 +33,7 @@ security = HTTPBasic()
 # Initialize SQLite
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
-
+        conn.row_factory = sqlite3.Row
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -67,16 +66,19 @@ def init_db():
             )
         """)
         
-        # Add a default test user (if not exists)
-        test_user = conn.execute("SELECT * FROM users WHERE username = ?", ("user1",)).fetchone()
-        if not test_user:
-            conn.execute("INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)", 
-                         (str(uuid.uuid4()), "user1", "pass1"))
-            
-        # Create index for faster queries
+        # Insert default users if not exist
+        existing_usernames = {row["username"] for row in conn.execute("SELECT username FROM users")}
+
+        for username, password in [("user1", "pass1"), ("user2", "pass2")]:
+            if username not in existing_usernames:
+                conn.execute("INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)",
+                             (str(uuid.uuid4()), username, password))
+
+        # Indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_uid ON detection_objects (prediction_uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_label ON detection_objects (label)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_score ON detection_objects (score)")
+
 
 init_db()
 
@@ -110,14 +112,8 @@ def save_detection_object(prediction_uid, label, score, box):
 @app.post("/predict")
 def predict(
     file: UploadFile = File(...),
-    credentials: Optional[HTTPBasicCredentials] = Depends(security)
+    user_id: str = Depends(get_current_user)
 ):
-    user_id = None
-    if credentials:
-        try:
-            user_id = get_current_user(credentials)
-        except HTTPException:
-            user_id = None
     start_time = time.time()
     ext = os.path.splitext(file.filename)[1]
     uid = str(uuid.uuid4())
@@ -241,8 +237,6 @@ def get_image(type: str, filename: str, user_id: str = Depends(get_current_user)
     """
     Get image by type and filename
     """
-    if type not in ["original", "predicted"]:
-        raise HTTPException(status_code=400, detail="Invalid image type")
     path = os.path.join("uploads", type, filename)
 
     with sqlite3.connect(DB_PATH) as conn:
@@ -264,6 +258,7 @@ def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_
     """
     accept = request.headers.get("accept", "")
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
         session = conn.execute("SELECT predicted_image, user_id  FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
 
     if not session:
@@ -277,8 +272,6 @@ def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Predicted image file not found")
 
-    if "image/png" in accept:
-        return FileResponse(image_path, media_type="image/png")
     elif "image/jpeg" in accept or "image/jpg" in accept:
         return FileResponse(image_path, media_type="image/jpeg")
     else:
@@ -304,11 +297,11 @@ def delete_prediction(uid: str, user_id: str = Depends(get_current_user)):
         conn.row_factory = sqlite3.Row
         session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
 
-        if session["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
         if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
+        
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Delete images
         for path in [session["original_image"], session["predicted_image"]]:
@@ -366,6 +359,6 @@ def health():
     """
     return {"status": "ok good!!"}
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
