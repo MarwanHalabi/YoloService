@@ -1,6 +1,8 @@
 import time
 from collections import Counter
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from typing_extensions import Annotated
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, Response
 from ultralytics import YOLO
 from PIL import Image
@@ -25,17 +27,30 @@ os.makedirs(PREDICTED_DIR, exist_ok=True)
 
 # Download the AI model (tiny model ~6MB)
 model = YOLO("yolov8n.pt")  
+security = HTTPBasic()
+
 
 # Initialize SQLite
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        """)
+
         # Create the predictions main table to store the prediction session
         conn.execute("""
             CREATE TABLE IF NOT EXISTS prediction_sessions (
                 uid TEXT PRIMARY KEY,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 original_image TEXT,
-                predicted_image TEXT
+                predicted_image TEXT,
+                user_id TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         """)
         
@@ -51,22 +66,38 @@ def init_db():
             )
         """)
         
-        # Create index for faster queries
+        # Insert default users if not exist
+        existing_usernames = {row["username"] for row in conn.execute("SELECT username FROM users")}
+
+        for username, password in [("user1", "pass1"), ("user2", "pass2")]:
+            if username not in existing_usernames:
+                conn.execute("INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)",
+                             (str(uuid.uuid4()), username, password))
+
+        # Indexes
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_uid ON detection_objects (prediction_uid)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_label ON detection_objects (label)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_score ON detection_objects (score)")
 
+
 init_db()
 
-def save_prediction_session(uid, original_image, predicted_image):
-    """
-    Save prediction session to database
-    """
+def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("""
+            SELECT user_id FROM users WHERE username = ? AND password = ?
+        """, (credentials.username, credentials.password)).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return row[0]  # return user_id
+    
+
+def save_prediction_session(uid, original_image, predicted_image, user_id):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
-            INSERT INTO prediction_sessions (uid, original_image, predicted_image)
-            VALUES (?, ?, ?)
-        """, (uid, original_image, predicted_image))
+            INSERT INTO prediction_sessions (uid, original_image, predicted_image, user_id)
+            VALUES (?, ?, ?, ?)
+        """, (uid, original_image, predicted_image, user_id))
 
 def save_detection_object(prediction_uid, label, score, box):
     """
@@ -79,10 +110,10 @@ def save_detection_object(prediction_uid, label, score, box):
         """, (prediction_uid, label, score, str(box)))
 
 @app.post("/predict")
-def predict(file: UploadFile = File(...)):
-    """
-    Predict objects in an image
-    """
+def predict(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user)
+):
     start_time = time.time()
     ext = os.path.splitext(file.filename)[1]
     uid = str(uuid.uuid4())
@@ -98,7 +129,7 @@ def predict(file: UploadFile = File(...)):
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
-    save_prediction_session(uid, original_path, predicted_path)
+    save_prediction_session(uid, original_path, predicted_path, user_id)
     
     detected_labels = []
     for box in results[0].boxes:
@@ -119,7 +150,7 @@ def predict(file: UploadFile = File(...)):
     }
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str):
+def get_prediction_by_uid(uid: str, user_id: str = Depends(get_current_user)):
     """
     Get prediction session by uid with all detected objects
     """
@@ -129,7 +160,10 @@ def get_prediction_by_uid(uid: str):
         session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
-            
+        
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
         # Get all detection objects for this prediction
         objects = conn.execute(
             "SELECT * FROM detection_objects WHERE prediction_uid = ?", 
@@ -152,21 +186,22 @@ def get_prediction_by_uid(uid: str):
         }
 
 @app.get("/predictions/count")
-def get_prediction_count_last_week():
+def get_prediction_count_last_week(user_id: str = Depends(get_current_user)):
     """
     Get total number of predictions made in the last 7 days
     """
+    
     one_week_ago = datetime.now() - timedelta(days=7)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT COUNT(*) as count FROM prediction_sessions WHERE timestamp >= ?", 
-            (one_week_ago.isoformat(),)
+        "SELECT COUNT(*) as count FROM prediction_sessions WHERE timestamp >= ? AND user_id = ?", 
+        (one_week_ago.isoformat(), user_id)
         ).fetchone()
         return {"count": row["count"]}
 
 @app.get("/predictions/label/{label}")
-def get_predictions_by_label(label: str):
+def get_predictions_by_label(label: str, user_id: str = Depends(get_current_user)):
     """
     Get prediction sessions containing objects with specified label
     """
@@ -176,13 +211,13 @@ def get_predictions_by_label(label: str):
             SELECT DISTINCT ps.uid, ps.timestamp
             FROM prediction_sessions ps
             JOIN detection_objects do ON ps.uid = do.prediction_uid
-            WHERE do.label = ?
-        """, (label,)).fetchall()
+            WHERE do.label = ?  AND user_id = ?
+        """, (label,user_id)).fetchall()
         
         return [{"uid": row["uid"], "timestamp": row["timestamp"]} for row in rows]
 
 @app.get("/predictions/score/{min_score}")
-def get_predictions_by_score(min_score: float):
+def get_predictions_by_score(min_score: float, user_id: str = Depends(get_current_user)):
     """
     Get prediction sessions containing objects with score >= min_score
     """
@@ -192,40 +227,51 @@ def get_predictions_by_score(min_score: float):
             SELECT DISTINCT ps.uid, ps.timestamp
             FROM prediction_sessions ps
             JOIN detection_objects do ON ps.uid = do.prediction_uid
-            WHERE do.score >= ?
-        """, (min_score,)).fetchall()
+            WHERE do.score >= ? AND user_id = ?
+        """, (min_score, user_id)).fetchall()
         
         return [{"uid": row["uid"], "timestamp": row["timestamp"]} for row in rows]
 
 @app.get("/image/{type}/{filename}")
-def get_image(type: str, filename: str):
+def get_image(type: str, filename: str, user_id: str = Depends(get_current_user)):
     """
     Get image by type and filename
     """
-    if type not in ["original", "predicted"]:
-        raise HTTPException(status_code=400, detail="Invalid image type")
     path = os.path.join("uploads", type, filename)
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Image not found")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        session = conn.execute(f"""
+            SELECT * FROM prediction_sessions 
+            WHERE {type}_image = ? AND user_id = ?
+        """, (path, user_id)).fetchone()
+
+    if not session:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
     return FileResponse(path)
 
 @app.get("/prediction/{uid}/image")
-def get_prediction_image(uid: str, request: Request):
+def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_current_user)):
     """
     Get prediction image by uid
     """
     accept = request.headers.get("accept", "")
     with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("SELECT predicted_image FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
-        if not row:
+        conn.row_factory = sqlite3.Row
+        session = conn.execute("SELECT predicted_image, user_id  FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
+
+    if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
-        image_path = row[0]
+
+    if session["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    image_path = session[0]
 
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Predicted image file not found")
 
-    if "image/png" in accept:
-        return FileResponse(image_path, media_type="image/png")
     elif "image/jpeg" in accept or "image/jpg" in accept:
         return FileResponse(image_path, media_type="image/jpeg")
     else:
@@ -233,7 +279,7 @@ def get_prediction_image(uid: str, request: Request):
         raise HTTPException(status_code=406, detail="Client does not accept an image format")
 
 @app.get("/labels")
-def get_labels_last_week():
+def get_labels_last_week(user_id: str = Depends(get_current_user)):
     one_week_ago = datetime.now() - timedelta(days=7)
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -241,17 +287,21 @@ def get_labels_last_week():
             SELECT DISTINCT do.label
             FROM detection_objects do
             JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
-            WHERE ps.timestamp >= ?
-        """, (one_week_ago.isoformat(),)).fetchall()
+            WHERE ps.timestamp >= ? AND ps.user_id = ?
+        """, (one_week_ago.isoformat(), user_id)).fetchall()
         return [row["label"] for row in rows]
 
 @app.delete("/prediction/{uid}")
-def delete_prediction(uid: str):
+def delete_prediction(uid: str, user_id: str = Depends(get_current_user)):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
+
         if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
+        
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Delete images
         for path in [session["original_image"], session["predicted_image"]]:
@@ -309,6 +359,6 @@ def health():
     """
     return {"status": "ok good!!"}
 
-if __name__ == "__main__":
+if __name__ == "__main__": # pragma: no cover
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
