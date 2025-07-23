@@ -5,17 +5,20 @@ from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, Response
 from ultralytics import YOLO
+import torch
 from PIL import Image
 import sqlite3
 import os
 import uuid
 import shutil
 from datetime import datetime, timedelta
+from db import get_db, SessionLocal
+from queries import *
+from sqlalchemy.orm import Session
+from init_db import create_initial_users
 
-# Disable GPU usage
-import torch
+
 torch.cuda.is_available = lambda: False
-
 app = FastAPI()
 
 UPLOAD_DIR = "uploads/original"
@@ -30,85 +33,29 @@ model = YOLO("yolov8n.pt")
 security = HTTPBasic()
 
 
-# Initialize SQLite
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
-            )
-        """)
-
-        # Create the predictions main table to store the prediction session
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS prediction_sessions (
-                uid TEXT PRIMARY KEY,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                original_image TEXT,
-                predicted_image TEXT,
-                user_id TEXT,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-        """)
-        
-        # Create the objects table to store individual detected objects in a given image
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS detection_objects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prediction_uid TEXT,
-                label TEXT,
-                score REAL,
-                box TEXT,
-                FOREIGN KEY (prediction_uid) REFERENCES prediction_sessions (uid)
-            )
-        """)
-        
-        # Insert default users if not exist
-        existing_usernames = {row["username"] for row in conn.execute("SELECT username FROM users")}
-
-        for username, password in [("user1", "pass1"), ("user2", "pass2")]:
-            if username not in existing_usernames:
-                conn.execute("INSERT INTO users (user_id, username, password) VALUES (?, ?, ?)",
-                             (str(uuid.uuid4()), username, password))
-
-        # Indexes
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_uid ON detection_objects (prediction_uid)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_label ON detection_objects (label)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_score ON detection_objects (score)")
+# Initialize default users ONCE
+def init_data():
+    db = SessionLocal()
+    try:
+        create_initial_users(db)
+    finally:
+        db.close()
 
 
-init_db()
+def get_current_user(
+    credentials: HTTPBasicCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    user = authenticate_user(db, credentials.username, credentials.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user.user_id
 
-def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("""
-            SELECT user_id FROM users WHERE username = ? AND password = ?
-        """, (credentials.username, credentials.password)).fetchone()
-        if not row:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        return row[0]  # return user_id
+
+@app.on_event("startup")
+def on_startup():
+    init_data()
     
-
-def save_prediction_session(uid, original_image, predicted_image, user_id):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            INSERT INTO prediction_sessions (uid, original_image, predicted_image, user_id)
-            VALUES (?, ?, ?, ?)
-        """, (uid, original_image, predicted_image, user_id))
-
-def save_detection_object(prediction_uid, label, score, box):
-    """
-    Save detection object to database
-    """
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            INSERT INTO detection_objects (prediction_uid, label, score, box)
-            VALUES (?, ?, ?, ?)
-        """, (prediction_uid, label, score, str(box)))
-
 @app.post("/predict")
 def predict(
     file: UploadFile = File(...),
@@ -150,40 +97,18 @@ def predict(
     }
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str, user_id: str = Depends(get_current_user)):
-    """
-    Get prediction session by uid with all detected objects
-    """
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        # Get prediction session
-        session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
-        if not session:
-            raise HTTPException(status_code=404, detail="Prediction not found")
-        
-        if session["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        # Get all detection objects for this prediction
-        objects = conn.execute(
-            "SELECT * FROM detection_objects WHERE prediction_uid = ?", 
-            (uid,)
-        ).fetchall()
-        
-        return {
-            "uid": session["uid"],
-            "timestamp": session["timestamp"],
-            "original_image": session["original_image"],
-            "predicted_image": session["predicted_image"],
-            "detection_objects": [
-                {
-                    "id": obj["id"],
-                    "label": obj["label"],
-                    "score": obj["score"],
-                    "box": obj["box"]
-                } for obj in objects
-            ]
-        }
+def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
+    prediction = get_prediction_by_uid(db, uid)
+    
+    if not prediction:
+        raise HTTPException(status_code=404, detail="Prediction not found")
+    
+    return {
+        "uid": prediction.uid,
+        "timestamp": prediction.timestamp,
+        "original_image": prediction.original_image,
+        "predicted_image": prediction.predicted_image # TODO fix test detection_objects is REMOVED
+    }
 
 @app.get("/predictions/count")
 def get_prediction_count_last_week(user_id: str = Depends(get_current_user)):
