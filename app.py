@@ -17,10 +17,12 @@ from db import get_db, SessionLocal
 from queries import *
 from sqlalchemy.orm import Session
 from init_db import create_initial_users
+from base import Base
+from db import engine
 
 
 torch.cuda.is_available = lambda: False
-app = FastAPI()
+
 
 UPLOAD_DIR = "uploads/original"
 PREDICTED_DIR = "uploads/predicted"
@@ -55,13 +57,25 @@ def get_current_user(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_data()  # your startup logic
+    # Create tables
+    Base.metadata.create_all(bind=engine)
+
+    # Seed initial data
+    db = SessionLocal()
+    try:
+        create_initial_users(db)
+    finally:
+        db.close()
+
     yield
-    
+
+app = FastAPI(lifespan=lifespan)
+
 @app.post("/predict")
 def predict(
     file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user), 
+    db: Session = Depends(get_db)
 ):
     start_time = time.time()
     ext = os.path.splitext(file.filename)[1]
@@ -78,7 +92,7 @@ def predict(
     annotated_image = Image.fromarray(annotated_frame)
     annotated_image.save(predicted_path)
 
-    save_prediction_session(uid, original_path, predicted_path, user_id)
+    save_prediction_session(db, uid, original_path, predicted_path, user_id)
     
     detected_labels = []
     for box in results[0].boxes:
@@ -86,7 +100,7 @@ def predict(
         label = model.names[label_idx]
         score = float(box.conf[0])
         bbox = box.xyxy[0].tolist()
-        save_detection_object(uid, label, score, bbox)
+        save_detection_object(db, uid, label, score, bbox)
         detected_labels.append(label)
 
     processing_time = round(time.time() - start_time, 2)
@@ -100,7 +114,7 @@ def predict(
 
 @app.get("/prediction/{uid}")
 def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
-    prediction = get_prediction_by_uid(db, uid)
+    prediction = query_prediction_by_uid(db, uid)
     
     if not prediction:
         raise HTTPException(status_code=404, detail="Prediction not found")
