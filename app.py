@@ -1,5 +1,6 @@
 import time
 from collections import Counter
+from fastapi.concurrency import asynccontextmanager
 from typing_extensions import Annotated
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -52,9 +53,10 @@ def get_current_user(
     return user.user_id
 
 
-@app.on_event("startup")
-def on_startup():
-    init_data()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_data()  # your startup logic
+    yield
     
 @app.post("/predict")
 def predict(

@@ -2,7 +2,8 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from init_db import create_initial_users
-    
+from base import Base
+
 DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")
 
 DATABASE_URL = (
@@ -17,7 +18,6 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base()
 
 def init_data():
 
@@ -30,4 +30,10 @@ def init_data():
     finally:
         db.close()
 
-
+# setup engine and session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
