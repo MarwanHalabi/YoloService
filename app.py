@@ -127,80 +127,48 @@ def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
     }
 
 @app.get("/predictions/count")
-def get_prediction_count_last_week(user_id: str = Depends(get_current_user)):
+def get_prediction_count_last_week(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get total number of predictions made in the last 7 days
     """
     
     one_week_ago = datetime.now() - timedelta(days=7)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-        "SELECT COUNT(*) as count FROM prediction_sessions WHERE timestamp >= ? AND user_id = ?", 
-        (one_week_ago.isoformat(), user_id)
-        ).fetchone()
-        return {"count": row["count"]}
+    count = count_predictions_by_user(db, user_id, timestamp=one_week_ago.isoformat())
+    return {"count": count}
 
 @app.get("/predictions/label/{label}")
-def get_predictions_by_label(label: str, user_id: str = Depends(get_current_user)):
+def get_predictions_by_label(label: str, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get prediction sessions containing objects with specified label
     """
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT DISTINCT ps.uid, ps.timestamp
-            FROM prediction_sessions ps
-            JOIN detection_objects do ON ps.uid = do.prediction_uid
-            WHERE do.label = ?  AND user_id = ?
-        """, (label,user_id)).fetchall()
-        
-        return [{"uid": row["uid"], "timestamp": row["timestamp"]} for row in rows]
+    return query_predictions_by_label(db, label, user_id)
 
 @app.get("/predictions/score/{min_score}")
-def get_predictions_by_score(min_score: float, user_id: str = Depends(get_current_user)):
+def get_predictions_by_score(min_score: float, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get prediction sessions containing objects with score >= min_score
     """
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT DISTINCT ps.uid, ps.timestamp
-            FROM prediction_sessions ps
-            JOIN detection_objects do ON ps.uid = do.prediction_uid
-            WHERE do.score >= ? AND user_id = ?
-        """, (min_score, user_id)).fetchall()
-        
-        return [{"uid": row["uid"], "timestamp": row["timestamp"]} for row in rows]
+   
+    predictions = query_predictions_by_score(db, min_score, user_id)
+    return predictions
 
 @app.get("/image/{type}/{filename}")
-def get_image(type: str, filename: str, user_id: str = Depends(get_current_user)):
+def get_image(file_type: str, filename: str, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get image by type and filename
     """
-    path = os.path.join("uploads", type, filename)
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        session = conn.execute(f"""
-            SELECT * FROM prediction_sessions 
-            WHERE {type}_image = ? AND user_id = ?
-        """, (path, user_id)).fetchone()
-
-    if not session:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    return FileResponse(path)
+    path = os.path.join("uploads", file_type, filename)
+    file = query_image_by_type_and_filename(db, file_type, path)
+    return FileResponse(file)
 
 @app.get("/prediction/{uid}/image")
-def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_current_user)):
+def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get prediction image by uid
     """
     accept = request.headers.get("accept", "")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        session = conn.execute("SELECT predicted_image, user_id  FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
+
+    session = query_prediction_image_by_uid(db, uid)
 
     if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
@@ -220,72 +188,49 @@ def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_
         raise HTTPException(status_code=406, detail="Client does not accept an image format")
 
 @app.get("/labels")
-def get_labels_last_week(user_id: str = Depends(get_current_user)):
+def get_labels_last_week(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     one_week_ago = datetime.now() - timedelta(days=7)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("""
-            SELECT DISTINCT do.label
-            FROM detection_objects do
-            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
-            WHERE ps.timestamp >= ? AND ps.user_id = ?
-        """, (one_week_ago.isoformat(), user_id)).fetchall()
-        return [row["label"] for row in rows]
+    labels_last_week = query_last_Week_labels(db, user_id, timestamp=one_week_ago.isoformat())
+    return labels_last_week
 
 @app.delete("/prediction/{uid}")
-def delete_prediction(uid: str, user_id: str = Depends(get_current_user)):
+def delete_prediction(uid: str, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        session = conn.execute("SELECT * FROM prediction_sessions WHERE uid = ?", (uid,)).fetchone()
+        prediction = query_get_prediction_by_uid(db, uid)
 
-        if not session:
+        if not prediction:
             raise HTTPException(status_code=404, detail="Prediction not found")
         
-        if session["user_id"] != user_id:
+        if prediction["user_id"] != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         # Delete images
-        for path in [session["original_image"], session["predicted_image"]]:
+        for path in [prediction["original_image"], session["predicted_image"]]:
             if os.path.exists(path):
                 os.remove(path)
 
         # Delete DB entries
-        conn.execute("DELETE FROM detection_objects WHERE prediction_uid = ?", (uid,))
-        conn.execute("DELETE FROM prediction_sessions WHERE uid = ?", (uid,))
+        query_delete_prediction_objects(db, uid)
+        query_delete_prediction_session(db, uid)
+
 
     return {"message": f"Prediction {uid} deleted successfully"}
 
+
 @app.get("/stats")
-def get_prediction_stats():
-    one_week_ago = datetime.now() - timedelta(days=7)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
+def get_prediction_stats(db: Session = Depends(get_db)):
+    since = datetime.now() - timedelta(days=7)
 
-        # Total predictions in the last week
-        total_predictions = conn.execute("""
-            SELECT COUNT(*) as count
-            FROM prediction_sessions
-            WHERE timestamp >= ?
-        """, (one_week_ago.isoformat(),)).fetchone()["count"]
+    total_predictions = query_count_predictions_since(db, since)
 
-        # Confidence scores
-        scores = conn.execute("""
-            SELECT do.score
-            FROM detection_objects do
-            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
-            WHERE ps.timestamp >= ?
-        """, (one_week_ago.isoformat(),)).fetchall()
-        score_values = [row["score"] for row in scores]
-        avg_score = round(sum(score_values) / len(score_values), 4) if score_values else 0.0
+    scores = query_get_scores_since(db, since)
+    score_values = [s.score for s in scores]
+    avg_score = round(sum(score_values) / len(score_values), 4) if score_values else 0.0
 
-        # Most common labels
-        labels = conn.execute("""
-            SELECT do.label
-            FROM detection_objects do
-            JOIN prediction_sessions ps ON do.prediction_uid = ps.uid
-            WHERE ps.timestamp >= ?
-        """, (one_week_ago.isoformat(),)).fetchall()
-        label_counts = Counter(row["label"] for row in labels)
+    labels = query_get_labels_since(db, since)
+    label_values = [l.label for l in labels]
+    label_counts = Counter(label_values)
 
     return {
         "total_predictions": total_predictions,
