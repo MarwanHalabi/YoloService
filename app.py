@@ -83,6 +83,7 @@ def predict(
     original_path = os.path.join(UPLOAD_DIR, uid + ext)
     predicted_path = os.path.join(PREDICTED_DIR, uid + ext)
 
+    
     with open(original_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -113,11 +114,14 @@ def predict(
     }
 
 @app.get("/prediction/{uid}")
-def get_prediction_by_uid(uid: str, db: Session = Depends(get_db)):
+def get_prediction_by_uid(uid: str, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     prediction = query_prediction_by_uid(db, uid)
     
     if not prediction:
         raise HTTPException(status_code=404, detail="Prediction not found")
+    
+    if prediction.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
     
     return {
         "uid": prediction.uid,
@@ -159,6 +163,8 @@ def get_image(file_type: str, filename: str, user_id: str = Depends(get_current_
     """
     path = os.path.join("uploads", file_type, filename)
     file = query_image_by_type_and_filename(db, file_type, path)
+    if not file:
+        raise HTTPException(status_code=403, detail="Access denied")
     return FileResponse(file)
 
 @app.get("/prediction/{uid}/image")
@@ -173,10 +179,10 @@ def get_prediction_image(uid: str, request: Request, user_id: str = Depends(get_
     if not session:
             raise HTTPException(status_code=404, detail="Prediction not found")
 
-    if session["user_id"] != user_id:
+    if session.user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    image_path = session[0]
+    image_path = session.predicted_image
 
     if not os.path.exists(image_path):
         raise HTTPException(status_code=404, detail="Predicted image file not found")
@@ -195,24 +201,23 @@ def get_labels_last_week(user_id: str = Depends(get_current_user), db: Session =
 
 @app.delete("/prediction/{uid}")
 def delete_prediction(uid: str, user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        prediction = query_get_prediction_by_uid(db, uid)
 
-        if not prediction:
-            raise HTTPException(status_code=404, detail="Prediction not found")
-        
-        if prediction["user_id"] != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+    prediction = query_get_prediction_by_uid(db, uid)
 
-        # Delete images
-        for path in [prediction["original_image"], session["predicted_image"]]:
-            if os.path.exists(path):
-                os.remove(path)
+    if not prediction:
+        raise HTTPException(status_code=404, detail="Prediction not found")
+    
+    if prediction.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
-        # Delete DB entries
-        query_delete_prediction_objects(db, uid)
-        query_delete_prediction_session(db, uid)
+    # Delete images
+    for path in [prediction.original_image, prediction.predicted_image]:
+        if os.path.exists(path):
+            os.remove(path)
+
+    # Delete DB entries
+    query_delete_prediction_objects(db, uid)
+    query_delete_prediction_session(db, uid)
 
 
     return {"message": f"Prediction {uid} deleted successfully"}
@@ -222,13 +227,13 @@ def delete_prediction(uid: str, user_id: str = Depends(get_current_user), db: Se
 def get_prediction_stats(db: Session = Depends(get_db)):
     since = datetime.now() - timedelta(days=7)
 
-    total_predictions = query_count_predictions_since(db, since)
+    total_predictions = query_count_predictions_since(db, since.isoformat())
 
-    scores = query_get_scores_since(db, since)
+    scores = query_get_scores_since(db, since.isoformat())
     score_values = [s.score for s in scores]
     avg_score = round(sum(score_values) / len(score_values), 4) if score_values else 0.0
 
-    labels = query_get_labels_since(db, since)
+    labels = query_get_labels_since(db, since.isoformat())
     label_values = [l.label for l in labels]
     label_counts = Counter(label_values)
 

@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from models import PredictionSession, DetectedObjects, User, DetectionObject
+from models import PredictionSession, DetectedObjects, User
 
 
 def save_prediction_session(db: Session, uid: str, original_img: str, predicted_img: str, user_id: str):
@@ -55,7 +55,7 @@ def query_prediction_image_by_uid(db: Session, uid: int):
     """
     Query prediction image by ID
     """
-    return db.query(PredictionSession).filter_by(id=uid).first()
+    return db.query(PredictionSession).filter_by(uid=uid).first()
      
 def query_last_Week_labels(db: Session, user_id: int, timestamp):
     """
@@ -71,26 +71,28 @@ def query_get_prediction_by_uid(db: Session, uid: str):
     return db.query(PredictionSession).filter_by(uid=uid).first()
 
 def query_delete_prediction_objects(db: Session, uid: str):
-    db.query(DetectionObject).filter_by(prediction_uid=uid).delete()
+    db.query(DetectedObjects).filter_by(prediction_uid=uid).delete()
+    db.commit()
 
 def query_delete_prediction_session(db: Session, uid: str):
     db.query(PredictionSession).filter_by(uid=uid).delete()
+    db.commit()
 
-def query_count_predictions_since(db: Session, since: datetime) -> int:
+def query_count_predictions_since(db: Session, since: float) -> int:
     return db.query(PredictionSession).filter(PredictionSession.timestamp >= since).count()
 
-def query_get_scores_since(db: Session, since: datetime) -> list[float]:
+def query_get_scores_since(db: Session, since: float) -> list[float]:
     return (
-        db.query(DetectionObject.score)
-        .join(PredictionSession, DetectionObject.prediction_uid == PredictionSession.uid)
+        db.query(DetectedObjects.score)
+        .join(PredictionSession, DetectedObjects.prediction_uid == PredictionSession.uid)
         .filter(PredictionSession.timestamp >= since)
         .all()
     )
 
-def query_get_labels_since(db: Session, since: datetime) -> list[str]:
+def query_get_labels_since(db: Session, since: float) -> list[str]:
     return (
-        db.query(DetectionObject.label)
-        .join(PredictionSession, DetectionObject.prediction_uid == PredictionSession.uid)
+        db.query(DetectedObjects.label)
+        .join(PredictionSession, DetectedObjects.prediction_uid == PredictionSession.uid)
         .filter(PredictionSession.timestamp >= since)
         .all()
     )
