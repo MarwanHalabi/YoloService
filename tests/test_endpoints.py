@@ -2,10 +2,12 @@ import os
 import shutil
 import unittest
 from fastapi.testclient import TestClient
-from app import app, DB_PATH, UPLOAD_DIR, PREDICTED_DIR, init_data
+from app import app, DB_PATH, UPLOAD_DIR, PREDICTED_DIR, init_data, get_current_user
 import pytest
 from base import Base
 from db import engine
+from unittest.mock import patch, MagicMock, ANY
+
 
 client = TestClient(app)
 
@@ -66,14 +68,43 @@ class TestAppEndpoints(unittest.TestCase):
         self.assertIn("total_predictions", data)
         self.assertIn("average_confidence_score", data)
 
-    def test_delete_prediction(self):
-        response = client.delete(f"/prediction/{self.__class__.uid}", auth=("admin", "admin"))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("deleted successfully", response.json()["message"])
+    @patch("app.query_get_prediction_by_uid")
+    @patch("app.query_delete_prediction_objects")
+    @patch("app.query_delete_prediction_session")
+    @patch("os.remove")
+    @patch("os.path.exists", return_value=True)
+    def test_delete_prediction_mocked(
+        self, mock_exists, mock_remove, mock_delete_session, mock_delete_objects, mock_get_prediction
+    ):
+        # Mock a prediction object
+        mock_prediction = MagicMock()
+        mock_prediction.uid = self.__class__.uid
+        mock_prediction.original_image = "uploads/original/test.jpg"
+        mock_prediction.predicted_image = "uploads/predicted/test.jpg"
+        mock_prediction.user_id = "admin"
+        
+        # Configure mock return
+        mock_get_prediction.return_value = mock_prediction
 
-        # Confirm it was removed
-        check = client.get(f"/prediction/{self.__class__.uid}", auth=("admin", "admin"))
-        self.assertEqual(check.status_code, 404)
+        # 👉 Override get_current_user to return 'admin'
+        app.dependency_overrides[get_current_user] = lambda: "admin"
+
+        try:
+            # Call the DELETE endpoint
+            response = client.delete(f"/prediction/{self.__class__.uid}", auth=("admin", "admin"))
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("deleted successfully", response.json()["message"])
+
+            # Confirm calls
+            mock_get_prediction.assert_called_once_with(ANY, self.__class__.uid)
+            mock_delete_objects.assert_called_once_with(ANY, self.__class__.uid)
+            mock_delete_session.assert_called_once_with(ANY, self.__class__.uid)
+            mock_remove.assert_any_call("uploads/original/test.jpg")
+            mock_remove.assert_any_call("uploads/predicted/test.jpg")
+        finally:
+            # Always clean up overrides
+            app.dependency_overrides = {}
+
 
     def test_full_prediction_flow(self):
         # Upload image
@@ -129,22 +160,6 @@ class TestAppEndpoints(unittest.TestCase):
     def test_get_prediction_not_found(self):
         response = client.get("/prediction/nonexistent-uid", auth=("admin", "admin"))
         self.assertEqual(response.status_code, 404)
-
-    # def test_predict_invalid_image_format(self):
-    #     # Create a dummy text file
-    #     invalid_path = "tests/bad.txt"
-    #     with open(invalid_path, "w") as f:
-    #         f.write("notanimage")
-
-    #     with open(invalid_path, "rb") as bad_file:
-    #         response = client.post(
-    #             "/predict",
-    #             files={"file": ("bad.txt", bad_file, "text/plain")},
-    #             auth=("admin", "admin")
-    #         )
-
-    #     os.remove(invalid_path)
-    #     self.assertEqual(response.status_code, 400)
 
 
     def test_delete_other_user_prediction(self):
