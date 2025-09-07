@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+.git
+.github
+.venv
+.vscode
+.idea
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+*.db
+*.pt
+
+uploads/
+coverage.xml
